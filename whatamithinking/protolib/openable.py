@@ -3,10 +3,8 @@ from typing import *
 import functools
 from enum import Enum
 import inspect
-import functools
-import threading
 
-from .lockable import Lockable
+from .stateable import Stateable
 from .util import leaf_method
 
 __all__ = [
@@ -306,26 +304,32 @@ def closer(method: Callable[P, T]) -> T:
     return _closer
 
 
-class Openable(ABC):
+class Openable(Stateable, ABC):
     """Sync Open/Close interface and state control.
 
     Open/Close can be used as standard setup/teardown methods for handling
     expensive resources used by an object.
+
+    Inherits from :class:`~.stateable.Stateable` so that ``_state_changed`` is shared
+    with any other ``Stateable`` mixins (e.g. ``Connectable``, ``Enableable``) on the
+    same concrete class.  This means a single ``_state_changed.wait()`` call is sufficient
+    to observe *any* state change on the object.
+
+    State transitions are performed by ``_set_open_state``, which holds
+    ``_state_changed`` across the mutation and calls ``notify_all()`` so that all
+    threads waiting on the condition are woken.
     """
 
     _open_state: OpenStateType = OpenStateType.CLOSED
-    _open_state_changed: threading.Condition = None
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._open_state_changed = threading.Condition(
-            self.lock if isinstance(self, Lockable) else None
-        )
 
     def _set_open_state(self, state: "OpenStateType") -> None:
-        with self._open_state_changed:
+        """Set the open state and notify all waiters on ``_state_changed``."""
+        with self._state_changed:
             self._open_state = state
-            self._open_state_changed.notify_all()
+            self._state_changed.notify_all()
 
     @property
     def open_state(self) -> OpenStateType:

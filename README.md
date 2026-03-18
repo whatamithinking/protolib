@@ -5,6 +5,7 @@ Foundational base classes and protocols for managing lifecycle state in Python o
 - [Installation](#installation)
 - [Overview](#overview)
 - [Modules](#modules)
+    - [Stateable](#stateable)
     - [Openable](#openable)
     - [Connectable](#connectable)
     - [Enableable](#enableable)
@@ -44,6 +45,32 @@ import whatamithinking.protolib as protolib
 ---
 
 ## Modules
+
+### Stateable
+
+`Stateable` is the common base class for all sync stateful mixins (`Openable`, `Connectable`, `Enableable`). It owns a single `_state_changed: threading.Condition` that every mixin on the same concrete object shares.
+
+#### Why a shared condition?
+
+Python's `threading.Condition` has no equivalent of `select()` — there is no way to block until _any one_ of several conditions is notified. If each mixin kept its own condition, code that needs to wait for a composite state change (e.g. "connected AND open") would be forced to poll. By sharing one condition across all state dimensions, a single `wait_for` call wakes on _any_ state mutation, regardless of which mixin triggered it:
+
+```python
+with obj._state_changed:
+    obj._state_changed.wait_for(
+        lambda: (
+            obj.connection_state == protolib.ConnectionStateType.CONNECTED
+            and obj.open_state == protolib.OpenStateType.OPEN
+        )
+    )
+```
+
+Every `_set_*_state` helper in `Connectable`, `Openable`, and `Enableable` acquires `_state_changed`, mutates its own state variable, and calls `notify_all()` — so all waiters are woken on every transition.
+
+#### Lock integration
+
+When the concrete class also inherits from `Lockable`, the condition is backed by `self.lock` (`threading.RLock`), consolidating all locking onto a single primitive.
+
+---
 
 ### Openable
 
@@ -95,14 +122,14 @@ Standalone check functions (`check_open`, `check_closed`, `check_not_closed`) ar
 
 #### State Condition Variable
 
-`Openable` exposes `_open_state_changed: threading.Condition`. It is acquired and `notify_all()` is called every time `_set_open_state()` runs, so other threads can reliably wait for a state transition:
+`Openable` inherits `_state_changed: threading.Condition` from `Stateable`. It is acquired and `notify_all()` is called every time `_set_open_state()` runs, so other threads can reliably wait for a state transition:
 
 ```python
-with obj._open_state_changed:
-    obj._open_state_changed.wait_for(lambda: obj.open_state == protolib.OpenStateType.OPEN)
+with obj._state_changed:
+    obj._state_changed.wait_for(lambda: obj.open_state == protolib.OpenStateType.OPEN)
 ```
 
-If the object is also a `Lockable`, the condition shares `self.lock` (`threading.RLock`) as its underlying lock.
+Because the condition is shared with all other `Stateable` mixins on the same object, a single `wait_for` call will also be woken by connection or enable state changes — no per-dimension polling needed. See [Stateable](#stateable) for details.
 
 #### Example
 
@@ -193,14 +220,14 @@ Standalone check functions (`check_connected`, `check_not_disconnected`, `check_
 
 #### State Condition Variable
 
-`Connectable` exposes `_connection_state_changed: threading.Condition`. It is acquired and `notify_all()` is called every time `_set_connection_state()` runs, so other threads can reliably wait for a state transition:
+`Connectable` inherits `_state_changed: threading.Condition` from `Stateable`. It is acquired and `notify_all()` is called every time `_set_connection_state()` runs, so other threads can reliably wait for a state transition:
 
 ```python
-with obj._connection_state_changed:
-    obj._connection_state_changed.wait_for(lambda: obj.connection_state == protolib.ConnectionStateType.CONNECTED)
+with obj._state_changed:
+    obj._state_changed.wait_for(lambda: obj.connection_state == protolib.ConnectionStateType.CONNECTED)
 ```
 
-If the object is also a `Lockable`, the condition shares `self.lock` (`threading.RLock`) as its underlying lock.
+Because the condition is shared with all other `Stateable` mixins on the same object, a single `wait_for` call will also be woken by open or enable state changes — no per-dimension polling needed. See [Stateable](#stateable) for details.
 
 #### Keepalive
 
@@ -306,14 +333,14 @@ Standalone check functions (`check_enabled`, `check_not_disabled`, `check_bad_en
 
 #### State Condition Variable
 
-`Enableable` exposes `_enabled_state_changed: threading.Condition`. It is acquired and `notify_all()` is called every time `_set_enabled_state()` runs, so other threads can reliably wait for a state transition:
+`Enableable` inherits `_state_changed: threading.Condition` from `Stateable`. It is acquired and `notify_all()` is called every time `_set_enabled_state()` runs, so other threads can reliably wait for a state transition:
 
 ```python
-with obj._enabled_state_changed:
-    obj._enabled_state_changed.wait_for(lambda: obj.enabled_state == protolib.EnabledStateType.ENABLED)
+with obj._state_changed:
+    obj._state_changed.wait_for(lambda: obj.enabled_state == protolib.EnabledStateType.ENABLED)
 ```
 
-If the object is also a `Lockable`, the condition shares `self.lock` (`threading.RLock`) as its underlying lock.
+Because the condition is shared with all other `Stateable` mixins on the same object, a single `wait_for` call will also be woken by connection or open state changes — no per-dimension polling needed. See [Stateable](#stateable) for details.
 
 #### Example
 
@@ -345,8 +372,8 @@ class Subsystem(protolib.Enableable):
 
 # Wait for enabled from another thread
 subsystem = Subsystem()
-with subsystem._enabled_state_changed:
-    subsystem._enabled_state_changed.wait_for(
+with subsystem._state_changed:
+    subsystem._state_changed.wait_for(
         lambda: subsystem.enabled_state == protolib.EnabledStateType.ENABLED
     )
 ```
@@ -433,7 +460,7 @@ class MyService(protolib.Logable):
 
 ## Combining Mixins
 
-All base classes are implemented with cooperative multiple inheritance (`super().__init__(**kwargs)`), so they can be freely combined:
+All base classes are implemented with cooperative multiple inheritance (`super().__init__(**kwargs)`), so they can be freely combined. When mixing multiple stateful classes (`Openable`, `Connectable`, `Enableable`), their shared `Stateable` base is initialised exactly once by the MRO, producing a single `_state_changed` condition covering all state dimensions on the object:
 
 ```python
 import whatamithinking.protolib as protolib

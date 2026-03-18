@@ -4,9 +4,8 @@ import inspect
 from typing import *
 import functools
 import datetime
-import threading
 
-from .lockable import Lockable
+from .stateable import Stateable
 from .util import leaf_method
 
 __all__ = [
@@ -373,19 +372,25 @@ def poller(method: Callable[P, T]) -> T:
     return _poller
 
 
-class Connectable(ABC):
-    """Sync connect/disconnect/poll interface."""
+class Connectable(Stateable, ABC):
+    """Sync connect/disconnect/poll interface.
+
+    Inherits from :class:`~.stateable.Stateable` so that ``_state_changed`` is shared
+    with any other ``Stateable`` mixins (e.g. ``Openable``, ``Enableable``) on the same
+    concrete class.  This means a single ``_state_changed.wait()`` call is sufficient
+    to observe *any* state change on the object.
+
+    State transitions are performed by ``_set_connection_state``, which holds
+    ``_state_changed`` across the mutation and calls ``notify_all()`` so that all
+    threads waiting on the condition are woken.
+    """
 
     connection_keepalive_timeout: datetime.timedelta | None = None
     _connection_state: ConnectionStateType = ConnectionStateType.DISCONNECTED
     _connection_last_used: datetime.datetime | None = None
-    _connection_state_changed: threading.Condition = None
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._connection_state_changed = threading.Condition(
-            self.lock if isinstance(self, Lockable) else None
-        )
 
     def __enter__(self) -> Self:
         """Open the connection, calling the `connect` method."""
@@ -402,9 +407,10 @@ class Connectable(ABC):
         self.disconnect()
 
     def _set_connection_state(self, state: "ConnectionStateType") -> None:
-        with self._connection_state_changed:
+        """Set the connection state and notify all waiters on ``_state_changed``."""
+        with self._state_changed:
             self._connection_state = state
-            self._connection_state_changed.notify_all()
+            self._state_changed.notify_all()
 
     @property
     def connection_state(self) -> "ConnectionStateType":

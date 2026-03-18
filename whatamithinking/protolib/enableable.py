@@ -3,9 +3,8 @@ import inspect
 from typing import *
 from enum import Enum
 from abc import ABC, abstractmethod
-import threading
 
-from .lockable import Lockable
+from .stateable import Stateable
 from .util import leaf_method
 
 __all__ = [
@@ -310,11 +309,20 @@ def disabler(method: Callable[P, T]) -> T:
     return _disabler
 
 
-class Enableable(ABC):
-    """Sync enable/disable object."""
+class Enableable(Stateable, ABC):
+    """Sync enable/disable object.
+
+    Inherits from :class:`~.stateable.Stateable` so that ``_state_changed`` is shared
+    with any other ``Stateable`` mixins (e.g. ``Connectable``, ``Openable``) on the same
+    concrete class.  This means a single ``_state_changed.wait()`` call is sufficient
+    to observe *any* state change on the object.
+
+    State transitions are performed by ``_set_enabled_state``, which holds
+    ``_state_changed`` across the mutation and calls ``notify_all()`` so that all
+    threads waiting on the condition are woken.
+    """
 
     _enabled_state: EnabledStateType = EnabledStateType.DISABLED
-    _enabled_state_changed: threading.Condition = None
 
     def __init__(
         self, *, enabled_state: Optional["EnabledStateType"] = None, **kwargs
@@ -323,14 +331,12 @@ class Enableable(ABC):
         self._enabled_state: EnabledStateType = (
             enabled_state if enabled_state is not None else EnabledStateType.DISABLED
         )
-        self._enabled_state_changed = threading.Condition(
-            self.lock if isinstance(self, Lockable) else None
-        )
 
     def _set_enabled_state(self, state: "EnabledStateType") -> None:
-        with self._enabled_state_changed:
+        """Set the enabled state and notify all waiters on ``_state_changed``."""
+        with self._state_changed:
             self._enabled_state = state
-            self._enabled_state_changed.notify_all()
+            self._state_changed.notify_all()
 
     @property
     def enabled_state(self) -> "EnabledStateType":
