@@ -4,7 +4,9 @@ import inspect
 from typing import *
 import functools
 import datetime
+import threading
 
+from .lockable import Lockable
 from .util import leaf_method
 
 __all__ = [
@@ -377,6 +379,13 @@ class Connectable(ABC):
     connection_keepalive_timeout: datetime.timedelta | None = None
     _connection_state: ConnectionStateType = ConnectionStateType.DISCONNECTED
     _connection_last_used: datetime.datetime | None = None
+    _connection_state_changed: threading.Condition = None
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._connection_state_changed = threading.Condition(
+            self.lock if isinstance(self, Lockable) else None
+        )
 
     def __enter__(self) -> Self:
         """Open the connection, calling the `connect` method."""
@@ -393,7 +402,9 @@ class Connectable(ABC):
         self.disconnect()
 
     def _set_connection_state(self, state: "ConnectionStateType") -> None:
-        self._connection_state = state
+        with self._connection_state_changed:
+            self._connection_state = state
+            self._connection_state_changed.notify_all()
 
     @property
     def connection_state(self) -> "ConnectionStateType":

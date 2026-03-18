@@ -3,7 +3,9 @@ import inspect
 from typing import *
 from enum import Enum
 from abc import ABC, abstractmethod
+import threading
 
+from .lockable import Lockable
 from .util import leaf_method
 
 __all__ = [
@@ -312,6 +314,7 @@ class Enableable(ABC):
     """Sync enable/disable object."""
 
     _enabled_state: EnabledStateType = EnabledStateType.DISABLED
+    _enabled_state_changed: threading.Condition = None
 
     def __init__(
         self, *, enabled_state: Optional["EnabledStateType"] = None, **kwargs
@@ -320,9 +323,14 @@ class Enableable(ABC):
         self._enabled_state: EnabledStateType = (
             enabled_state if enabled_state is not None else EnabledStateType.DISABLED
         )
+        self._enabled_state_changed = threading.Condition(
+            self.lock if isinstance(self, Lockable) else None
+        )
 
     def _set_enabled_state(self, state: "EnabledStateType") -> None:
-        self._enabled_state = state
+        with self._enabled_state_changed:
+            self._enabled_state = state
+            self._enabled_state_changed.notify_all()
 
     @property
     def enabled_state(self) -> "EnabledStateType":

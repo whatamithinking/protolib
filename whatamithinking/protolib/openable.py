@@ -4,7 +4,9 @@ import functools
 from enum import Enum
 import inspect
 import functools
+import threading
 
+from .lockable import Lockable
 from .util import leaf_method
 
 __all__ = [
@@ -312,9 +314,18 @@ class Openable(ABC):
     """
 
     _open_state: OpenStateType = OpenStateType.CLOSED
+    _open_state_changed: threading.Condition = None
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._open_state_changed = threading.Condition(
+            self.lock if isinstance(self, Lockable) else None
+        )
 
     def _set_open_state(self, state: "OpenStateType") -> None:
-        self._open_state = state
+        with self._open_state_changed:
+            self._open_state = state
+            self._open_state_changed.notify_all()
 
     @property
     def open_state(self) -> OpenStateType:
