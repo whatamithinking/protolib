@@ -73,8 +73,8 @@ class Lockable(ABC):
                 lock: Optional. A threading.RLock instance to use. Defaults to
                         creating one internally.
         """
-        super().__init__(**kwargs)
         self.lock = lock or threading.RLock()
+        super().__init__(**kwargs)
 
 
 class AsyncLockable(ABC):
@@ -87,5 +87,5 @@ class AsyncLockable(ABC):
                 lock: Optional. A `aiotools.Lock` instance to use. Defaults to
                         an `aiotools.RLock` instance which can be re-entered multiple times.
         """
-        super().__init__(**kwargs)
         self.lock = lock or aiotools.RLock()
+        super().__init__(**kwargs)
